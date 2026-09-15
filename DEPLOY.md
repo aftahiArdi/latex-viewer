@@ -153,6 +153,8 @@ compiles into a hidden `.build/` folder inside the project, then moves the
 finished `main.pdf` (only if the compile succeeded) and `main.log` next to your
 sources. The PDF is swapped in with an atomic rename, so the viewer can never
 fetch a half-written file; a failed compile leaves the last good PDF in place.
+If a compile fails, it is retried once from an empty `.build/`, so a stale or
+truncated `.aux` from an interrupted run cannot keep breaking later compiles.
 Intermediate files (`.aux`, `.out`, …) stay in `.build/`, which is gitignored.
 
 Backing up means backing up `documents/`. Nothing else on the host needs saving.

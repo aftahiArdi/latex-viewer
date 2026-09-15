@@ -24,6 +24,22 @@ WATCH_STALE_AFTER = 30  # seconds without a watcher pass before /healthz fails
 PDF_WAIT_SECONDS = 5  # how long /pdf waits for an in-progress write to finish
 
 
+def _pdflatex(project_dir: Path) -> bool:
+    result = subprocess.run(
+        [
+            "pdflatex",
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            f"-output-directory={BUILD_DIRNAME}",
+            "main.tex",
+        ],
+        cwd=project_dir,
+        capture_output=True,
+        timeout=120,
+    )
+    return result.returncode == 0
+
+
 def _compile_once(project_dir: Path) -> None:
     try:
         # pdflatex truncates and rewrites its output in place, fonts last, so
@@ -35,22 +51,19 @@ def _compile_once(project_dir: Path) -> None:
         built_log = build_dir / "main.log"
         # A failed earlier run can leave a partial PDF here; never promote it.
         built_pdf.unlink(missing_ok=True)
-        result = subprocess.run(
-            [
-                "pdflatex",
-                "-interaction=nonstopmode",
-                "-halt-on-error",
-                f"-output-directory={BUILD_DIRNAME}",
-                "main.tex",
-            ],
-            cwd=project_dir,
-            capture_output=True,
-            timeout=120,
-        )
+        ok = _pdflatex(project_dir)
+        if not ok:
+            # A killed or crashed run can leave a truncated .aux that breaks
+            # every later compile. Retry once from a clean build directory so
+            # only genuine errors in the document keep failing.
+            for leftover in build_dir.iterdir():
+                if leftover.is_file():
+                    leftover.unlink()
+            ok = _pdflatex(project_dir)
         if built_log.exists():
             os.replace(built_log, project_dir / "main.log")
         # On failure keep serving the last good PDF rather than a partial one.
-        if result.returncode == 0 and _is_complete_pdf_file(built_pdf):
+        if ok and _is_complete_pdf_file(built_pdf):
             os.replace(built_pdf, project_dir / "main.pdf")
     except Exception:
         # A hung or failing pdflatex must never take down the worker thread.
