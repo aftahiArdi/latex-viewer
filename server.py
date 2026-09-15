@@ -383,7 +383,49 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+BUILD_OUTPUTS = ("main.pdf", "main.log", "main.aux", "main.out", "main.fls", "main.fdb_latexmk")
+
+
+def _drop_privileges() -> None:
+    """Run as whoever owns /documents instead of root.
+
+    Otherwise, on Linux hosts, every PDF and log the compiler writes into the
+    bind mount is owned by root and the user cannot edit or delete it. Docker
+    Desktop (macOS/Windows) mounts often report root, in which case staying
+    root is harmless because the host side maps ownership itself.
+    """
+    if os.getuid() != 0 or not DOCUMENTS_DIR.exists():
+        return
+    st = DOCUMENTS_DIR.stat()
+    uid, gid = st.st_uid, st.st_gid
+    if uid == 0:
+        return
+    # Hand back root-owned output left by earlier versions that ran as root,
+    # or pdflatex could not overwrite it after the switch.
+    for d in DOCUMENTS_DIR.iterdir():
+        if not d.is_dir():
+            continue
+        paths = [d / name for name in BUILD_OUTPUTS]
+        build_dir = d / BUILD_DIRNAME
+        if build_dir.is_dir():
+            paths.append(build_dir)
+            paths.extend(build_dir.iterdir())
+        for path in paths:
+            try:
+                if path.lstat().st_uid == 0:
+                    os.lchown(path, uid, gid)
+            except OSError:
+                pass
+    os.setgroups([])
+    os.setgid(gid)
+    os.setuid(uid)
+    # root's HOME is unwritable now; TeX writes caches under $HOME.
+    os.environ["HOME"] = "/tmp"
+    print(f"Running as uid={uid} gid={gid} (owner of {DOCUMENTS_DIR})")
+
+
 if __name__ == "__main__":
+    _drop_privileges()
     # The watcher's first pass compiles every project.
     threading.Thread(target=_watch, daemon=True).start()
 

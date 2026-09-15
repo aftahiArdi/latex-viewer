@@ -13,24 +13,67 @@ Two containers, defined in `docker-compose.yml`:
 | `latex-workspace` | built locally from `Dockerfile` | TeX Live + `server.py` — HTTP server, file watcher, PDF compiler |
 | `latex-workspace-autoheal` | `willfarrell/autoheal:latest` | Restarts `latex-workspace` if its healthcheck fails |
 
-Published on host port **8585** (container port 8080), reachable over Tailscale at
-`http://ardi.tail351339.ts.net:8585`.
+Published on host port **8585** (container port 8080), on `127.0.0.1` by
+default. Both are configurable — see [Configuration](#configuration).
 
 ## Prerequisites
 
-- Docker + Compose v2 (host currently runs Docker 29.3.0 / Compose v5.1.0)
-- Host port **8585** free
+- Docker with Compose v2 — Docker Engine on Linux, or Docker Desktop on macOS /
+  Windows. Works on x86-64 and ARM (Apple Silicon, Raspberry Pi 4/5).
+- Host port **8585** free (or pick another in `.env`)
 - ~3.3 GB of disk for the built image (TeX Live is the bulk of it)
-- `/var/run/docker.sock` readable by the Docker daemon's user — autoheal mounts
-  it read-write so it can issue restarts
+- A Docker socket autoheal can mount — `/var/run/docker.sock` by default
 
-No `.env` file and no secrets. The service has no auth of its own; access
-control is Tailscale.
+No secrets. The service has **no login**, which is why it only listens on
+localhost unless you say otherwise.
+
+## Configuration
+
+All settings are optional environment variables, read by Compose from a `.env`
+file next to `docker-compose.yml` (gitignored). Start from the template:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `LATEX_WORKSPACE_PORT` | `8585` | Host port for the viewer |
+| `LATEX_WORKSPACE_BIND` | `127.0.0.1` | Host interface. `0.0.0.0` makes it reachable from other devices — only do this on a trusted network such as Tailscale or a home LAN |
+| `DOCKER_SOCK` | `/var/run/docker.sock` | Docker socket for autoheal. Rootless Docker: `/run/user/<uid>/docker.sock`; Podman: `/run/user/<uid>/podman/podman.sock` |
+
+After changing `.env`, apply it with `docker compose up -d`.
+
+### File ownership
+
+On Linux, `server.py` starts as root, then switches to the user and group that
+own `documents/` before compiling anything. PDFs, logs and `.build/` therefore
+belong to you, not root. Build files left as root by older versions are handed
+over automatically at startup. On Docker Desktop (macOS/Windows) the mount
+usually reports root and ownership is mapped by Docker itself, so no switch
+happens and none is needed.
+
+If `documents/` is itself owned by root (for example Docker created it because it
+did not exist), fix that on the host: `sudo chown -R "$USER": documents`.
+
+### Platform notes
+
+- **Windows:** clone inside WSL2 (e.g. `~/latex-workspace`) rather than under
+  `C:\` — file change polling and I/O are much faster there. `.gitattributes`
+  keeps LF line endings on every checkout.
+- **macOS:** no extra setup; Docker Desktop shares your home directory by default.
+  If the repo lives elsewhere, add that path under Settings → Resources → File
+  sharing.
+- **Fedora / RHEL (SELinux):** if the container gets `Permission denied` on
+  `/documents`, change the mount in `docker-compose.yml` to
+  `./documents:/documents:z`.
 
 ## First Deploy
 
 ```bash
-cd ~/Projects/latex-workspace
+git clone git@github.com:aftahiArdi/latex-viewer.git latex-workspace
+cd latex-workspace
+cp .env.example .env    # optional, see Configuration
 docker compose up -d --build
 ```
 
@@ -45,7 +88,10 @@ Verify:
 docker compose ps                                  # both containers Up
 curl -s http://localhost:8585/healthz              # {"status": "ok"}
 curl -s http://localhost:8585/projects             # lists documents/ projects
+docker logs latex-workspace | head                 # "Running as uid=…" on Linux
 ```
+
+(Use your `LATEX_WORKSPACE_PORT` if you changed it.)
 
 On startup `server.py` compiles every project under `/documents` that has a
 `main.tex`, then polls for changes every second.
@@ -56,7 +102,7 @@ On startup `server.py` compiles every project under `/documents` that has a
 still required:
 
 ```bash
-cd ~/Projects/latex-workspace
+cd latex-workspace
 docker compose up -d --build
 ```
 
@@ -80,7 +126,7 @@ loses nothing. In-flight compiles are killed and re-run on startup.
 ## Stop, Start, Logs
 
 ```bash
-cd ~/Projects/latex-workspace
+cd latex-workspace
 
 docker compose up -d          # start
 docker compose stop           # stop, keep containers
@@ -91,8 +137,8 @@ docker logs latex-workspace -f
 ```
 
 Both containers use `restart: unless-stopped`, so they come back automatically
-after a host reboot. Logs are also available in Dozzle at
-`http://ardi.tail351339.ts.net:8888`.
+after a host reboot (provided Docker starts on boot — on Docker Desktop, enable
+"Start Docker Desktop when you sign in").
 
 ## Data and Persistence
 
@@ -109,8 +155,7 @@ sources. The PDF is swapped in with an atomic rename, so the viewer can never
 fetch a half-written file; a failed compile leaves the last good PDF in place.
 Intermediate files (`.aux`, `.out`, …) stay in `.build/`, which is gitignored.
 
-Backing up means backing up `documents/` (currently ~516 KB). Nothing else on
-the host needs saving.
+Backing up means backing up `documents/`. Nothing else on the host needs saving.
 
 ## Health Monitoring
 
@@ -128,19 +173,9 @@ docker inspect --format '{{.State.Health.Status}}' latex-workspace
 docker inspect --format '{{json .State.Health}}' latex-workspace | python3 -m json.tool
 ```
 
-The service is listed on the Glance dashboard — `glance/config/home.yml`, the
-**Apps** monitor, entry "LaTeX Workspace". It has no `check-url` override
-because `/` returns 200. If you ever want Glance to probe the health endpoint
-instead, add:
-
-```yaml
-            - title: LaTeX Workspace
-              url: http://ardi.tail351339.ts.net:8585
-              check-url: http://ardi.tail351339.ts.net:8585/healthz
-              icon: si:latex
-```
-
-Glance hot-reloads `config/`; no restart needed.
+To have an external uptime monitor (Uptime Kuma, Glance, Healthchecks, …) watch
+the service, point it at `http://<host>:8585/healthz` — it returns 200 when the
+server and file watcher are working, and 503 otherwise.
 
 ## Adding LaTeX Packages
 
@@ -173,9 +208,23 @@ so path traversal via these routes returns 404.
 ## Troubleshooting
 
 **Port 8585 already in use** — `docker compose up` fails to bind. Find the
-holder with `ss -tlnp | grep 8585`, or change the host side of the mapping in
-`docker-compose.yml` (`"8585:8080"` → `"<new>:8080"`) and update the Glance
-entry to match.
+holder (`ss -tlnp | grep 8585` on Linux, `lsof -iTCP:8585 -sTCP:LISTEN` on macOS,
+`netstat -ano | findstr 8585` on Windows), or set `LATEX_WORKSPACE_PORT` in
+`.env` and run `docker compose up -d`.
+
+**Can't open it from another device** — the default bind is `127.0.0.1`. Set
+`LATEX_WORKSPACE_BIND=0.0.0.0` in `.env`, run `docker compose up -d`, and make
+sure the host firewall allows the port.
+
+**Generated files owned by root / `Permission denied` in the log** — check
+`docker logs latex-workspace | head` for the `Running as uid=…` line. If it is
+missing on Linux, `documents/` is owned by root; run
+`sudo chown -R "$USER": documents` and `docker compose restart latex-workspace`.
+
+**autoheal exits with a Docker socket error** — your socket is not at
+`/var/run/docker.sock` (rootless Docker, Podman, Colima). Set `DOCKER_SOCK` in
+`.env`. autoheal is optional; `docker compose up -d latex-workspace` starts the
+viewer alone.
 
 **A project's PDF never appears** — the compile failed. `server.py` runs
 `pdflatex -interaction=nonstopmode -halt-on-error -output-directory=.build main.tex` and discards its
@@ -221,10 +270,10 @@ To stop the restarts while you investigate, `docker compose stop autoheal`.
 ## Full Teardown
 
 ```bash
-cd ~/Projects/latex-workspace
+cd latex-workspace
 docker compose down                          # remove both containers
 docker image rm latex-workspace-latex-workspace:latest   # reclaim ~3.3 GB
 ```
 
-`documents/` is untouched by either command. Also remove the "LaTeX Workspace"
-entry from `glance/config/home.yml` so the dashboard stops reporting it down.
+`documents/` is untouched by either command. If you added the service to an
+uptime monitor, remove it there too.

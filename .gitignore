@@ -18,6 +18,10 @@
 *.bcf
 .build/
 
+# Local deployment settings (see .env.example)
+.env
+__pycache__/
+
 # Editor / OS
 *.swp
 .DS_Store
