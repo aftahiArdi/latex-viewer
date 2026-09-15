@@ -53,6 +53,9 @@ documents/
     └── main.tex
 ```
 
+`documents/` is gitignored, so your CVs and letters stay on your machine and are
+never committed. A fresh clone starts with an empty `documents/`.
+
 To add a project: create the folder and its `main.tex`. It appears in the sidebar
 within 5 seconds and is compiled straight away.
 
@@ -63,8 +66,22 @@ To remove a project from the UI: delete or rename the folder.
 Open `documents/<project>/main.tex` in any editor (VS Code, Neovim, Emacs, …) and
 save. The container recompiles and the browser updates within a few seconds.
 
-If a save doesn't produce a new PDF, the compile probably failed — the last good
-PDF stays on screen and the error is in `documents/<project>/main.log`.
+If a save doesn't produce a new PDF, the compile probably failed: the last good
+PDF stays on screen, the status badge turns red and the log panel opens.
+
+### Compile log
+
+The counters in the toolbar (errors · warnings · bad boxes) open a log panel under
+the PDF; press `L` to toggle it. Drag its top edge to resize.
+
+- **Problems** lists what `pdflatex` reported in `main.log`, errors first. Each
+  entry shows where TeX stopped and the surrounding lines of `main.tex`. Filter by
+  kind with the chips, or by text with the search box (`/`).
+- **main.log** is the full log with line numbers and highlighting. Click `log:N`
+  on a problem to jump to it; **Hide noise** drops package and font loading lines.
+- **Copy** puts the whole log on your clipboard; **Open ↗** shows the raw file.
+
+A project can be linked directly as `http://localhost:8585/#<project>`.
 
 To force a recompile without saving, click **Compile** in the browser toolbar.
 
@@ -93,8 +110,8 @@ latex-workspace/
 ├── Dockerfile            # debian-slim + TeX Live + python3
 ├── docker-compose.yml    # port mapping, documents/ bind mount, autoheal
 ├── .env.example          # optional port / bind address / Docker socket settings
-├── server.py             # HTTP server + file watcher + pdflatex runner
-└── documents/            # your .tex projects live here
+├── server.py             # HTTP server, file watcher, pdflatex runner, log parser
+└── documents/            # your .tex projects live here (gitignored)
     └── cv-main/
         └── main.tex
 ```

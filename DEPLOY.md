@@ -88,6 +88,7 @@ Verify:
 docker compose ps                                  # both containers Up
 curl -s http://localhost:8585/healthz              # {"status": "ok"}
 curl -s http://localhost:8585/projects             # lists documents/ projects
+curl -s http://localhost:8585/log/<project>        # parsed errors/warnings from main.log
 docker logs latex-workspace | head                 # "Running as uid=…" on Linux
 ```
 
@@ -157,7 +158,12 @@ If a compile fails, it is retried once from an empty `.build/`, so a stale or
 truncated `.aux` from an interrupted run cannot keep breaking later compiles.
 Intermediate files (`.aux`, `.out`, …) stay in `.build/`, which is gitignored.
 
+`pdflatex` runs with `max_print_line=1000` (plus wider `error_line` settings), so
+`main.log` is not hard-wrapped at 79 columns and each message stays on one line.
+The viewer's log panel reads that file through `/log/<project>`.
+
 Backing up means backing up `documents/`. Nothing else on the host needs saving.
+`documents/` is gitignored, so git is not a backup of your documents.
 
 ## Health Monitoring
 
