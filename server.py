@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import socket
 import subprocess
 import threading
@@ -10,57 +11,117 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 DOCUMENTS_DIR = Path("/documents")
+BUILD_DIRNAME = ".build"
 PORT = 8080
 
 _tex_mtimes: dict[str, float] = {}
 _compiling: set[str] = set()
+# Projects whose source changed while a compile was already running.
+_pending: set[str] = set()
 _lock = threading.Lock()
+_watch_heartbeat = time.monotonic()
+WATCH_STALE_AFTER = 30  # seconds without a watcher pass before /healthz fails
+PDF_WAIT_SECONDS = 5  # how long /pdf waits for an in-progress write to finish
+
+
+def _compile_once(project_dir: Path) -> None:
+    try:
+        # pdflatex truncates and rewrites its output in place, fonts last, so
+        # serving that file mid-compile hands out a PDF with missing glyphs.
+        # Build in a private directory and swap the finished PDF in atomically.
+        build_dir = project_dir / BUILD_DIRNAME
+        build_dir.mkdir(exist_ok=True)
+        built_pdf = build_dir / "main.pdf"
+        built_log = build_dir / "main.log"
+        # A failed earlier run can leave a partial PDF here; never promote it.
+        built_pdf.unlink(missing_ok=True)
+        result = subprocess.run(
+            [
+                "pdflatex",
+                "-interaction=nonstopmode",
+                "-halt-on-error",
+                f"-output-directory={BUILD_DIRNAME}",
+                "main.tex",
+            ],
+            cwd=project_dir,
+            capture_output=True,
+            timeout=120,
+        )
+        if built_log.exists():
+            os.replace(built_log, project_dir / "main.log")
+        # On failure keep serving the last good PDF rather than a partial one.
+        if result.returncode == 0 and _is_complete_pdf_file(built_pdf):
+            os.replace(built_pdf, project_dir / "main.pdf")
+    except Exception:
+        # A hung or failing pdflatex must never take down the worker thread.
+        traceback.print_exc()
 
 
 def _run_pdflatex(project_dir: Path) -> None:
     name = project_dir.name
     with _lock:
         if name in _compiling:
+            # The running worker recompiles once its current pass finishes, so
+            # a save that lands mid-compile is never lost.
+            _pending.add(name)
             return
         _compiling.add(name)
     try:
-        subprocess.run(
-            ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "main.tex"],
-            cwd=project_dir,
-            capture_output=True,
-            timeout=120,
-        )
-    except Exception:
-        # A hung or failing pdflatex must never leave the project stuck in
-        # _compiling, nor take down the worker thread silently.
-        traceback.print_exc()
-    finally:
+        while True:
+            with _lock:
+                _pending.discard(name)
+            _compile_once(project_dir)
+            with _lock:
+                # Check and release under one lock hold, so a request arriving
+                # now either sees _compiling and queues, or starts a new worker.
+                if name not in _pending:
+                    _compiling.discard(name)
+                    return
+    except BaseException:
         with _lock:
             _compiling.discard(name)
+            _pending.discard(name)
+        raise
 
 
 def _compile(project_dir: Path) -> None:
     threading.Thread(target=_run_pdflatex, args=(project_dir,), daemon=True).start()
 
 
+def _is_complete_pdf(data: bytes) -> bool:
+    # pdfTeX writes the %%EOF marker last; a truncated file never ends with it.
+    return data.startswith(b"%PDF-") and b"%%EOF" in data[-1024:]
+
+
+def _is_complete_pdf_file(path: Path) -> bool:
+    try:
+        return _is_complete_pdf(path.read_bytes())
+    except OSError:
+        return False
+
+
 def _watch() -> None:
+    global _watch_heartbeat
     while True:
         try:
-            for d in DOCUMENTS_DIR.iterdir():
-                if not d.is_dir():
-                    continue
+            projects = [d for d in DOCUMENTS_DIR.iterdir() if d.is_dir()]
+        except Exception:
+            projects = []
+        for d in projects:
+            # One unreadable project must not stop the others being watched.
+            try:
                 tex = d / "main.tex"
                 if not tex.exists():
                     continue
                 mtime = tex.stat().st_mtime
-                prev = _tex_mtimes.get(d.name)
-                if prev is None:
-                    _tex_mtimes[d.name] = mtime
-                elif prev != mtime:
+                # First sight (server start, or a project created while running)
+                # compiles too, so a new project gets a PDF without a second save.
+                if _tex_mtimes.get(d.name) != mtime:
                     _tex_mtimes[d.name] = mtime
                     _compile(d)
-        except Exception:
-            pass
+            except Exception:
+                traceback.print_exc()
+        _watch_heartbeat = time.monotonic()
         time.sleep(1)
 
 
@@ -215,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
             if p in ("/", "/index.html"):
                 self._send(200, "text/html", INDEX_HTML.encode())
             elif p == "/healthz":
-                self._json({"status": "ok"})
+                self._serve_health()
             elif p == "/projects":
                 self._json(self._list_projects())
             elif p.startswith("/pdf/"):
@@ -256,13 +317,41 @@ class Handler(BaseHTTPRequestHandler):
         if d is None:
             self.send_error(404)
             return
-        try:
-            data = (d / "main.pdf").read_bytes()
-        except OSError:
-            # Missing, or being rewritten by pdflatex right now.
-            self.send_error(404)
-            return
+        pdf = d / "main.pdf"
+        # Our own compiles swap the PDF in atomically, but a pdflatex run
+        # outside this server (e.g. on the host) still writes it in place.
+        # Wait for it to finish instead of sending a truncated file.
+        deadline = time.monotonic() + PDF_WAIT_SECONDS
+        while True:
+            try:
+                data = pdf.read_bytes()
+            except OSError:
+                data = None
+            if data is not None and _is_complete_pdf(data):
+                break
+            if time.monotonic() >= deadline:
+                if data is None:
+                    self.send_error(404)
+                else:
+                    self._send(
+                        503,
+                        "text/plain",
+                        b"PDF is being written, retry shortly\n",
+                        {"Retry-After": "2", "Cache-Control": "no-store"},
+                    )
+                return
+            time.sleep(0.25)
         self._send(200, "application/pdf", data, {"Cache-Control": "no-cache"})
+
+    def _serve_health(self) -> None:
+        stale = time.monotonic() - _watch_heartbeat
+        if stale > WATCH_STALE_AFTER:
+            # A dead watcher means edits silently stop compiling; report
+            # unhealthy so autoheal restarts the container.
+            body = json.dumps({"status": "watcher stalled", "seconds": round(stale)})
+            self._send(503, "application/json", body.encode())
+            return
+        self._json({"status": "ok"})
 
     def _serve_mtime(self, name: str) -> None:
         d = self._project_dir(name)
@@ -295,11 +384,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    if DOCUMENTS_DIR.exists():
-        for d in DOCUMENTS_DIR.iterdir():
-            if d.is_dir() and (d / "main.tex").exists():
-                _compile(d)
-
+    # The watcher's first pass compiles every project.
     threading.Thread(target=_watch, daemon=True).start()
 
     print(f"LaTeX Workspace running on http://0.0.0.0:{PORT}")

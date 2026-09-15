@@ -103,9 +103,11 @@ There are **no Docker volumes**. The single mount is:
 ```
 
 Each subdirectory of `documents/` with a `main.tex` is a project. `server.py`
-writes build output (`main.pdf`, `.aux`, `.log`, `.fls`, `.fdb_latexmk`,
-`.out`) back into that same host directory, so the compiler's artifacts land
-next to your sources.
+compiles into a hidden `.build/` folder inside the project, then moves the
+finished `main.pdf` (only if the compile succeeded) and `main.log` next to your
+sources. The PDF is swapped in with an atomic rename, so the viewer can never
+fetch a half-written file; a failed compile leaves the last good PDF in place.
+Intermediate files (`.aux`, `.out`, …) stay in `.build/`, which is gitignored.
 
 Backing up means backing up `documents/` (currently ~516 KB). Nothing else on
 the host needs saving.
@@ -159,9 +161,9 @@ Already installed: `texlive-latex-extra`, `texlive-fonts-recommended`,
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /` | Single-page UI (HTML is embedded in `server.py`) |
-| `GET /healthz` | `{"status": "ok"}` — used by the container healthcheck |
+| `GET /healthz` | `{"status": "ok"}`, or 503 if the file watcher has not run for 30s — used by the container healthcheck |
 | `GET /projects` | JSON list of projects and whether each has a PDF |
-| `GET /pdf/<project>` | Serves `main.pdf`, `Cache-Control: no-cache` |
+| `GET /pdf/<project>` | Serves `main.pdf`, `Cache-Control: no-cache`; waits up to 5s if the file is mid-write, then 503 |
 | `GET /mtime/<project>` | PDF mtime; the browser polls this every 2s to auto-reload |
 | `GET /compile/<project>` | Triggers a compile (the toolbar **Compile** button) |
 
@@ -176,7 +178,7 @@ holder with `ss -tlnp | grep 8585`, or change the host side of the mapping in
 entry to match.
 
 **A project's PDF never appears** — the compile failed. `server.py` runs
-`pdflatex -interaction=nonstopmode -halt-on-error main.tex` and discards its
+`pdflatex -interaction=nonstopmode -halt-on-error -output-directory=.build main.tex` and discards its
 output, so the error is not in `docker logs`. Read the TeX log on the host
 instead:
 
@@ -188,7 +190,7 @@ Or reproduce the exact command inside the container:
 
 ```bash
 docker exec -w /documents/<project> latex-workspace \
-  pdflatex -interaction=nonstopmode -halt-on-error main.tex
+  pdflatex -interaction=nonstopmode -halt-on-error -output-directory=.build main.tex
 ```
 
 **A project doesn't show in the sidebar** — the directory must be a direct child

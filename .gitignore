@@ -16,6 +16,7 @@
 *.xdv
 *.run.xml
 *.bcf
+.build/
 
 # Editor / OS
 *.swp
