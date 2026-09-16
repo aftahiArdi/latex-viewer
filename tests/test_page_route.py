@@ -128,3 +128,23 @@ def test_concurrent_requests_render_once(client, tmp_path, fake_pdftoppm):
         t.join(timeout=15)
     assert bodies == [PNG] * 4
     assert len(fake_pdftoppm) == 1, "the per-project lock did not serialise rendering"
+
+
+def test_a_cached_page_is_served_without_waiting_for_the_lock(client, tmp_path, fake_pdftoppm):
+    """A rendered page must not queue behind another page's render."""
+    make_project(tmp_path, "doc", pdf=FAKE_PDF, log=LOG_2_PAGES)
+    assert client.get("/page/doc/1.png").body == PNG  # prime the cache
+    with server._page_lock("doc"):  # stand in for another page mid-render
+        r = client.get("/page/doc/1.png")
+    assert r.status == 200
+    assert r.body == PNG
+
+
+def test_missing_poppler_is_named_in_the_log(client, tmp_path, monkeypatch, capfd):
+    make_project(tmp_path, "doc", pdf=FAKE_PDF, log=LOG_2_PAGES)
+    monkeypatch.setattr(
+        server.subprocess, "run",
+        lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError("pdftoppm")),
+    )
+    assert client.get("/page/doc/1.png").status == 502
+    assert "poppler" in capfd.readouterr().out

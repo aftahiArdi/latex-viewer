@@ -402,9 +402,19 @@ def _render_page(project_dir: Path, n: int, mtime: float) -> bytes | None:
     stamp = f"{mtime:.0f}"
     target = cache / f"{stamp}-{n}.png"
 
-    # One render at a time per project, or concurrent requests for the same
-    # page race each other writing the same file.
+    # A finished page is published with os.replace(), so a reader sees either
+    # the whole file or none of it. Serving it without taking the lock keeps a
+    # cached page from waiting behind another page's render.
+    try:
+        return target.read_bytes()
+    except OSError:
+        pass
+
+    # One render at a time per project: it stops two requests racing to render
+    # the same page, and it stops one request's sweep from deleting another's
+    # freshly written output for the same project.
     with _page_lock(project_dir.name):
+        # Another thread may have rendered this page while we waited.
         try:
             return target.read_bytes()
         except OSError:
@@ -435,7 +445,20 @@ def _render_page(project_dir: Path, n: int, mtime: float) -> bytes | None:
             data = produced[0].read_bytes()
             os.replace(produced[0], target)  # same filesystem, so atomic
             return data
-        except (OSError, subprocess.SubprocessError):
+        except FileNotFoundError:
+            print(f"pdftoppm not found: cannot rasterize {project_dir.name}. "
+                  "Is poppler-utils installed in the image?")
+            return None
+        except subprocess.TimeoutExpired:
+            print(f"pdftoppm timed out after {PDFTOPPM_TIMEOUT}s "
+                  f"on {project_dir.name} page {n}")
+            return None
+        except subprocess.CalledProcessError as exc:
+            err = (exc.stderr or b"").decode(errors="replace").strip()
+            print(f"pdftoppm failed on {project_dir.name} page {n}: {err}")
+            return None
+        except OSError as exc:
+            print(f"Could not rasterize {project_dir.name} page {n}: {exc!r}")
             return None
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
@@ -1161,7 +1184,9 @@ class Handler(BaseHTTPRequestHandler):
         if png is None:
             self.send_error(502, "Could not rasterize page")
             return
-        # The mtime is in the query string, so a cached page is never stale.
+        # Safe to cache forever: a recompile changes the PDF's mtime, and
+        # therefore the URL the client requests, so a stale cached response
+        # is never reused for the current PDF.
         self._send(200, "image/png", png,
                    {"Cache-Control": "public, max-age=31536000, immutable"})
 
