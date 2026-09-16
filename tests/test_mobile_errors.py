@@ -1,3 +1,5 @@
+import re
+
 import server
 
 
@@ -33,3 +35,32 @@ def test_log_endpoint_feeds_the_shell(client, tmp_path):
     body = client.get("/log/doc").json()
     assert body["counts"]["error"] >= 1
     assert body["problems"][0]["kind"] == "error"
+
+
+def _z(html, selector):
+    rule = html[html.index(selector + " {"):]
+    return int(re.search(r"z-index:\s*(\d+)", rule[:rule.index("}")]).group(1))
+
+
+def test_the_open_sheet_never_covers_its_toggle():
+    html = server.MOBILE_HTML
+    assert _z(html, ".strip") > _z(html, ".sheet")
+
+
+def test_auto_open_is_tracked_per_project():
+    html = server.MOBILE_HTML
+    assert "dataset.broke" not in html
+    assert "brokeSeen[current]" in html
+
+
+def test_switching_projects_clears_the_previous_problems():
+    html = server.MOBILE_HTML
+    body = html[html.index("function selectProject("):]
+    body = body[:body.index("\n}\n")]
+    assert body.index("renderIssues()") > body.index("logData = null")
+
+
+def test_strip_is_exposed_as_a_button():
+    html = server.MOBILE_HTML
+    assert 'role="button"' in html and 'aria-controls="sheet"' in html
+    assert "$('strip').setAttribute('aria-expanded', open)" in html

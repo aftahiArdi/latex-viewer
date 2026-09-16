@@ -1397,7 +1397,7 @@ MOBILE_HTML = r"""<!DOCTYPE html>
   .ptr.armed { color: var(--mauve); }
 
   .strip {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 22;
     padding: 11px 16px calc(var(--bot) + 11px);
     background: #181825f2; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
     border-top: 1px solid var(--s0);
@@ -1455,7 +1455,7 @@ MOBILE_HTML = r"""<!DOCTYPE html>
 </nav>
 
 <div class="sheet" id="sheet"></div>
-<div class="strip" id="strip" hidden></div>
+<div class="strip" id="strip" role="button" tabindex="0" aria-controls="sheet" aria-expanded="false" hidden></div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -1514,6 +1514,7 @@ function selectProject(name) {
   current = name;
   store.set('project', name);
   pages = 0; pdfMtime = 0; logMtime = -1; compileError = null; logData = null;
+  renderIssues();
   $('title').textContent = name;
   document.title = name + ' · LaTeX';
   refreshProjects();
@@ -1691,12 +1692,17 @@ setInterval(refreshProjects, 5000);
 
 const KIND_ORDER = { error: 0, warning: 1, badbox: 2 };
 const KIND_LABEL = { error: 'error', warning: 'warning', badbox: 'bad box' };
+const brokeSeen = {};
 
 function setSheet(open) {
   $('sheet').classList.toggle('open', open);
   $('strip').classList.toggle('open', open);
+  $('strip').setAttribute('aria-expanded', open);
 }
 $('strip').addEventListener('click', () => setSheet(!$('sheet').classList.contains('open')));
+$('strip').addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('strip').click(); }
+});
 
 function renderIssues() {
   const strip = $('strip');
@@ -1729,8 +1735,8 @@ function renderIssues() {
     (rows || (logData.compile_error ? '' : '<div class="none">Nothing to report</div>'));
 
   // Surface a newly broken build without the user having to go looking.
-  if (broke && !strip.dataset.broke) setSheet(true);
-  strip.dataset.broke = broke ? '1' : '';
+  if (broke && !brokeSeen[current]) setSheet(true);
+  brokeSeen[current] = broke;
 }
 </script>
 </body>
