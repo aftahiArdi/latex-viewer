@@ -21,6 +21,7 @@
 # Local deployment settings (see .env.example)
 .env
 __pycache__/
+.pytest_cache/
 
 # Editor / OS
 *.swp
