@@ -50,3 +50,26 @@ def test_drawer_is_dismissable_and_announced():
     assert 'aria-expanded' in html
     assert "e.key === 'Escape'" in html
     assert "'&#39;'" in html  # esc() covers single quotes
+
+
+def test_pages_are_requested_with_a_cache_busting_mtime():
+    assert "'/page/' + encodeURIComponent(current)" in server.MOBILE_HTML
+    assert "'?t=' + pdfMtime" in server.MOBILE_HTML
+
+
+def test_page_images_are_lazy_and_reserve_their_height():
+    html = server.MOBILE_HTML
+    assert "loading = 'lazy'" in html
+    # Reserving an A4 ratio stops the scroll jumping as images arrive.
+    assert "aspectRatio" in html
+
+
+def test_polling_pauses_when_the_app_is_backgrounded():
+    html = server.MOBILE_HTML
+    assert "visibilitychange" in html
+    assert "document.hidden" in html
+
+
+def test_polling_backs_off_on_failure():
+    html = server.MOBILE_HTML
+    assert "BACKOFF = [2000, 5000, 15000, 30000]" in html

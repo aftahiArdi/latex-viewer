@@ -1382,6 +1382,20 @@ MOBILE_HTML = r"""<!DOCTYPE html>
              background: var(--mauve); color: var(--base); font-weight: 700; }
   .compile:disabled { opacity: .5; }
 
+  /* Bottom padding clears the fixed problem strip added in Task 7. */
+  #main { padding: 10px 10px calc(var(--bot) + 64px); }
+  #pages { display: flex; flex-direction: column; gap: 10px; }
+  .page { display: block; width: 100%; height: auto; border-radius: 6px;
+          background: #fff; box-shadow: 0 1px 6px #11111b80; }
+  .page.failed { aspect-ratio: 1 / 1.414; display: flex; align-items: center;
+                 justify-content: center; background: var(--mantle);
+                 color: var(--o0); font-size: 13px; border: 1px dashed var(--s0); }
+
+  .ptr { height: 0; overflow: hidden; display: flex; align-items: center;
+         justify-content: center; color: var(--o0); font-size: 13px;
+         transition: height .16s; }
+  .ptr.armed { color: var(--mauve); }
+
   .empty { padding: 25vh 24px; text-align: center; color: var(--o0); line-height: 1.6; }
   .empty span { display: block; font-size: 34px; margin-bottom: 10px; }
 </style>
@@ -1395,7 +1409,8 @@ MOBILE_HTML = r"""<!DOCTYPE html>
 </header>
 
 <main id="main">
-  <div class="empty"><span>&#128196;</span>Choose a project</div>
+  <div class="ptr" id="ptr">Pull to recompile</div>
+  <div id="pages"><div class="empty"><span>&#128196;</span>Choose a project</div></div>
 </main>
 
 <div class="scrim" id="scrim"></div>
@@ -1489,6 +1504,40 @@ function renderStatus() {
   setDot('ready', '');
 }
 
+/* ---------- pages ---------- */
+
+function showPages() {
+  const area = $('pages');
+  if (!current) {
+    area.innerHTML = '<div class="empty"><span>&#128196;</span>Choose a project</div>';
+    return;
+  }
+  if (!pdfMtime || !pages) {
+    const why = logData && !logData.ok ? 'the last compile failed' : 'nothing built yet';
+    area.innerHTML = '<div class="empty"><span>&#128196;</span>No PDF &mdash; ' + why + '</div>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (let n = 1; n <= pages; n++) {
+    const img = document.createElement('img');
+    img.className = 'page';
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.alt = 'Page ' + n;
+    // Hold an A4 slot until the real dimensions arrive, so lazy loads further
+    // down the document do not yank the scroll position around.
+    img.style.aspectRatio = '1 / 1.414';
+    img.addEventListener('load', () => { img.style.aspectRatio = 'auto'; }, { once: true });
+    img.addEventListener('error', () => {
+      img.replaceWith(Object.assign(document.createElement('div'),
+        { className: 'page failed', textContent: 'Page ' + n + ' failed to render' }));
+    }, { once: true });
+    img.src = '/page/' + encodeURIComponent(current) + '/' + n + '.png' + '?t=' + pdfMtime;
+    frag.appendChild(img);
+  }
+  area.replaceChildren(frag);
+}
+
 /* ---------- compile ---------- */
 
 $('compile').addEventListener('click', compileNow);
@@ -1502,9 +1551,101 @@ async function compileNow() {
   setTimeout(poll, 800);
 }
 
-/* poll() is defined in the polling section below. */
+/* ---------- polling ---------- */
+
+const BACKOFF = [2000, 5000, 15000, 30000];
+let failures = 0, timer = null;
+
+function schedule() {
+  clearTimeout(timer);
+  // A backgrounded PWA must not keep a 2s request loop running in a pocket.
+  if (document.hidden || !current) return;
+  timer = setTimeout(poll, BACKOFF[Math.min(failures, BACKOFF.length - 1)]);
+}
+
+async function poll() {
+  if (!current) return;
+  const name = current;
+  let s;
+  try {
+    s = await (await fetch('/mtime/' + encodeURIComponent(name))).json();
+  } catch {
+    failures++;
+    online = false;
+    renderStatus();
+    schedule();
+    return;
+  }
+  if (name !== current) return;
+  failures = 0;
+  online = true;
+
+  compiling = s.compiling;
+  if (s.mtime !== pdfMtime || s.pages !== pages) {
+    const first = pdfMtime === 0;
+    pdfMtime = s.mtime;
+    pages = s.pages;
+    showPages();
+    if (!first && pdfMtime) flashUntil = Date.now() + 2000;
+  }
+  if (s.log_mtime !== logMtime || s.compile_error !== compileError) {
+    logMtime = s.log_mtime;
+    compileError = s.compile_error;
+    await loadLog(name);
+  }
+  renderStatus();
+  schedule();
+}
+
+async function loadLog(name) {
+  try {
+    const data = await (await fetch('/log/' + encodeURIComponent(name))).json();
+    if (name !== current) return;
+    logData = data;
+  } catch { return; }
+  if (!pdfMtime) showPages();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { clearTimeout(timer); return; }
+  failures = 0;
+  poll();
+});
+
 refreshProjects();
 setInterval(refreshProjects, 5000);
+
+/* ---------- pull to recompile ---------- */
+
+(function () {
+  const THRESHOLD = 70, MAX = 90;
+  const ptr = $('ptr');
+  let startY = null, armed = false;
+
+  addEventListener('touchstart', e => {
+    // Only arm at the very top, or this fights the normal scroll.
+    startY = (scrollY <= 0 && e.touches.length === 1) ? e.touches[0].clientY : null;
+    armed = false;
+  }, { passive: true });
+
+  addEventListener('touchmove', e => {
+    if (startY === null) return;
+    const dy = e.touches[0].clientY - startY;
+    if (dy <= 0) { ptr.style.height = '0px'; return; }
+    const h = Math.min(dy * 0.5, MAX);
+    ptr.style.height = h + 'px';
+    armed = h >= THRESHOLD * 0.5;
+    ptr.classList.toggle('armed', armed);
+    ptr.textContent = armed ? 'Release to recompile' : 'Pull to recompile';
+  }, { passive: true });
+
+  addEventListener('touchend', () => {
+    if (startY !== null && armed) compileNow();
+    startY = null; armed = false;
+    ptr.style.height = '0px';
+    ptr.classList.remove('armed');
+  }, { passive: true });
+})();
 </script>
 </body>
 </html>
