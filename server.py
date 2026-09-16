@@ -1396,6 +1396,39 @@ MOBILE_HTML = r"""<!DOCTYPE html>
          transition: height .16s; }
   .ptr.armed { color: var(--mauve); }
 
+  .strip {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+    padding: 11px 16px calc(var(--bot) + 11px);
+    background: #181825f2; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+    border-top: 1px solid var(--s0);
+    display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--sub);
+  }
+  .strip .caret { margin-left: auto; color: var(--o0); transition: transform .2s; }
+  .strip.open .caret { transform: rotate(180deg); }
+  .sev { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .sev.error { background: var(--red); }
+  .sev.warning { background: var(--yellow); }
+  .sev.badbox { background: var(--peach); border-radius: 2px; }
+  .n { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+  .n.zero { opacity: .4; }
+
+  .sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 21;
+    max-height: 62vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    background: var(--crust); border-top: 1px solid var(--s0);
+    border-radius: 14px 14px 0 0;
+    padding: 8px 0 calc(var(--bot) + 64px);
+    transform: translateY(100%); transition: transform .22s ease;
+  }
+  .sheet.open { transform: none; }
+  .prob { display: flex; gap: 10px; align-items: baseline;
+          padding: 11px 16px; border-bottom: 1px solid #1e1e2e; }
+  .prob .msg { flex: 1; min-width: 0; font: 12.5px/1.5 ui-monospace, Menlo, monospace;
+               overflow-wrap: anywhere; }
+  .prob.error .msg { color: #f5c2d0; }
+  .prob .at { color: var(--o0); font-size: 11px; white-space: nowrap; }
+  .sheet .none { padding: 26px 16px; text-align: center; color: var(--o0); font-size: 13px; }
+
   .empty { padding: 25vh 24px; text-align: center; color: var(--o0); line-height: 1.6; }
   .empty span { display: block; font-size: 34px; margin-bottom: 10px; }
 </style>
@@ -1420,6 +1453,9 @@ MOBILE_HTML = r"""<!DOCTYPE html>
   <div class="fill"></div>
   <button class="compile" id="compile">Compile</button>
 </nav>
+
+<div class="sheet" id="sheet"></div>
+<div class="strip" id="strip" hidden></div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -1607,6 +1643,7 @@ async function loadLog(name) {
     logData = data;
   } catch { return; }
   if (!pdfMtime) showPages();
+  renderIssues();
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -1649,6 +1686,52 @@ setInterval(refreshProjects, 5000);
     ptr.classList.remove('armed');
   }, { passive: true });
 })();
+
+/* ---------- problems ---------- */
+
+const KIND_ORDER = { error: 0, warning: 1, badbox: 2 };
+const KIND_LABEL = { error: 'error', warning: 'warning', badbox: 'bad box' };
+
+function setSheet(open) {
+  $('sheet').classList.toggle('open', open);
+  $('strip').classList.toggle('open', open);
+}
+$('strip').addEventListener('click', () => setSheet(!$('sheet').classList.contains('open')));
+
+function renderIssues() {
+  const strip = $('strip');
+  if (!logData) { strip.hidden = true; setSheet(false); return; }
+  const c = logData.counts || { error: 0, warning: 0, badbox: 0 };
+  const total = c.error + c.warning + c.badbox;
+  const broke = !!(logData.compile_error || (logData.exists && !logData.ok));
+  if (!total && !broke) { strip.hidden = true; setSheet(false); return; }
+
+  strip.hidden = false;
+  strip.innerHTML =
+    ['error', 'warning', 'badbox'].map(k =>
+      `<span class="n${c[k] ? '' : ' zero'}"><i class="sev ${k}"></i>${c[k]}</span>`
+    ).join('') + '<span class="caret">&#9652;</span>';
+
+  const problems = (logData.problems || []).slice().sort(
+    (a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind]
+  );
+  const rows = problems.map(p =>
+    `<div class="prob ${p.kind}"><i class="sev ${p.kind}"></i>` +
+    `<span class="msg">${esc(p.message)}</span>` +
+    `<span class="at">${p.line ? 'main.tex:' + p.line : KIND_LABEL[p.kind]}</span></div>`
+  ).join('');
+
+  $('sheet').innerHTML =
+    (logData.compile_error
+      ? `<div class="prob error"><i class="sev error"></i>` +
+        `<span class="msg">${esc(logData.compile_error)}</span></div>`
+      : '') +
+    (rows || (logData.compile_error ? '' : '<div class="none">Nothing to report</div>'));
+
+  // Surface a newly broken build without the user having to go looking.
+  if (broke && !strip.dataset.broke) setSheet(true);
+  strip.dataset.broke = broke ? '1' : '';
+}
 </script>
 </body>
 </html>
