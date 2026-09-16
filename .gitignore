@@ -33,3 +33,6 @@ __pycache__/
 # the bind mount is created with your ownership rather than root's.
 documents/*
 !documents/.gitkeep
+
+# SDD scratch workspace (subagent-driven development)
+.superpowers/
