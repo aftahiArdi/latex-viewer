@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import threading
@@ -14,6 +15,11 @@ from urllib.parse import unquote, urlparse
 DOCUMENTS_DIR = Path("/documents")
 BUILD_DIRNAME = ".build"
 PORT = 8080
+PAGES_DIRNAME = "pages"  # under .build/, so a compile retry cannot unlink it
+PAGE_DPI = 150  # A4 at 150dpi is ~1240px wide: a 390pt iPhone at 3x
+PDFTOPPM_TIMEOUT = 60
+_page_locks: dict[str, threading.Lock] = {}
+_page_locks_guard = threading.Lock()
 
 _tex_mtimes: dict[str, float] = {}
 _compiling: set[str] = set()
@@ -376,6 +382,63 @@ def _compute_page_count(project_dir: Path) -> int:
         return 0
     m = _PDFINFO_PAGES_RE.search(out.stdout)
     return int(m.group(1)) if m else 0
+
+
+def _page_lock(name: str) -> threading.Lock:
+    with _page_locks_guard:
+        return _page_locks.setdefault(name, threading.Lock())
+
+
+def _render_page(project_dir: Path, n: int, mtime: float) -> bytes | None:
+    """PNG bytes for page `n`, rasterizing through poppler if not cached.
+
+    Cached under .build/pages/<mtime>-<n>.png. The mtime in the name means a
+    recompile invalidates every page without any explicit invalidation step;
+    pages from older mtimes are swept on the first request after the change.
+
+    Returns None if poppler is missing or the render fails.
+    """
+    cache = project_dir / BUILD_DIRNAME / PAGES_DIRNAME
+    stamp = f"{mtime:.0f}"
+    target = cache / f"{stamp}-{n}.png"
+
+    # One render at a time per project, or concurrent requests for the same
+    # page race each other writing the same file.
+    with _page_lock(project_dir.name):
+        try:
+            return target.read_bytes()
+        except OSError:
+            pass
+
+        try:
+            cache.mkdir(parents=True, exist_ok=True)
+            for old in cache.glob("*.png"):
+                if not old.name.startswith(f"{stamp}-"):
+                    old.unlink(missing_ok=True)
+        except OSError:
+            return None
+
+        # pdftoppm zero-pads its output suffix based on the page count, so
+        # render into a private directory and take whatever single file lands.
+        scratch = cache / f"tmp-{n}"
+        shutil.rmtree(scratch, ignore_errors=True)
+        try:
+            scratch.mkdir()
+            subprocess.run(
+                ["pdftoppm", "-png", "-r", str(PAGE_DPI), "-f", str(n), "-l", str(n),
+                 str(project_dir / "main.pdf"), str(scratch / "p")],
+                check=True, capture_output=True, timeout=PDFTOPPM_TIMEOUT,
+            )
+            produced = sorted(scratch.glob("*.png"))
+            if not produced:
+                return None
+            data = produced[0].read_bytes()
+            os.replace(produced[0], target)  # same filesystem, so atomic
+            return data
+        except (OSError, subprocess.SubprocessError):
+            return None
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
 
 
 INDEX_HTML = r"""<!DOCTYPE html>
@@ -1002,6 +1065,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(self._list_projects())
             elif p.startswith("/pdf/"):
                 self._serve_pdf(p[5:])
+            elif p.startswith("/page/"):
+                self._serve_page(p[6:])
             elif p.startswith("/log/"):
                 self._serve_log(p[5:])
             elif p.startswith("/rawlog/"):
@@ -1067,6 +1132,38 @@ class Handler(BaseHTTPRequestHandler):
                 return
             time.sleep(0.25)
         self._send(200, "application/pdf", data, {"Cache-Control": "no-cache"})
+
+    def _serve_page(self, rest: str) -> None:
+        """GET /page/<project>/<n>.png — one rasterized page for the mobile shell."""
+        name, _, leaf = rest.rpartition("/")
+        if not name or not leaf.endswith(".png"):
+            self.send_error(404)
+            return
+        d = self._project_dir(name)
+        if d is None:
+            self.send_error(404)
+            return
+        try:
+            n = int(leaf[:-4])
+        except ValueError:
+            self.send_error(404)
+            return
+        # Bound the page number before shelling out, so a bad request can
+        # never reach poppler.
+        if not 1 <= n <= _page_count(d):
+            self.send_error(404)
+            return
+        mtime = _mtime(d / "main.pdf")
+        if not mtime:
+            self.send_error(404)
+            return
+        png = _render_page(d, n, mtime)
+        if png is None:
+            self.send_error(502, "Could not rasterize page")
+            return
+        # The mtime is in the query string, so a cached page is never stale.
+        self._send(200, "image/png", png,
+                   {"Cache-Control": "public, max-age=31536000, immutable"})
 
     def _serve_health(self) -> None:
         stale = time.monotonic() - _watch_heartbeat
