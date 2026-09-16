@@ -1310,6 +1310,203 @@ if (location.hash.length > 1) select(decodeURIComponent(location.hash.slice(1)))
 </html>
 """
 
+MOBILE_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1e1e2e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="LaTeX">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<title>LaTeX Workspace</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --base: #1e1e2e; --mantle: #181825; --crust: #11111b;
+    --s0: #313244; --s1: #45475a; --o0: #6c7086; --sub: #a6adc8; --text: #cdd6f4;
+    --red: #f38ba8; --yellow: #f9e2af; --peach: #fab387; --green: #a6e3a1;
+    --blue: #89b4fa; --mauve: #cba6f7;
+    --top: env(safe-area-inset-top); --bot: env(safe-area-inset-bottom);
+  }
+  html { background: var(--base); }
+  body {
+    font: 15px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--base); color: var(--text);
+    min-height: 100vh; -webkit-text-size-adjust: 100%; overscroll-behavior-y: contain;
+  }
+  button { font: inherit; color: inherit; background: none; border: none; }
+  [hidden] { display: none !important; }
+
+  header {
+    position: sticky; top: 0; z-index: 30;
+    padding: calc(var(--top) + 8px) 12px 8px;
+    background: #181825f2; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--s0);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .burger { font-size: 20px; line-height: 1; padding: 6px 8px; color: var(--sub); }
+  .title { flex: 1; min-width: 0; font-size: 15px; font-weight: 600;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--s1); flex-shrink: 0; }
+  .dot.compiling { background: var(--yellow); animation: pulse 1s ease-in-out infinite; }
+  .dot.ready { background: var(--green); }
+  .dot.updated { background: var(--blue); }
+  .dot.error { background: var(--red); }
+  .dot.offline { background: var(--o0); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .state { font-size: 12px; color: var(--o0); }
+
+  .scrim { position: fixed; inset: 0; z-index: 40; background: #11111baa;
+           opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .scrim.open { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed; z-index: 41; top: 0; bottom: 0; left: 0; width: min(78vw, 300px);
+    background: var(--mantle); border-right: 1px solid var(--s0);
+    padding: calc(var(--top) + 16px) 10px calc(var(--bot) + 16px);
+    transform: translateX(-100%); transition: transform .22s ease;
+    display: flex; flex-direction: column; gap: 4px; overflow-y: auto;
+  }
+  .drawer.open { transform: none; }
+  .drawer h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+               color: var(--o0); padding: 0 10px 10px; }
+  .proj { display: flex; align-items: center; gap: 9px; padding: 13px 12px;
+          border-radius: 8px; font-size: 15px; color: #bac2de; text-align: left; width: 100%; }
+  .proj.active { background: var(--s1); color: var(--text); font-weight: 600; }
+  .proj .pn { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drawer .fill { flex: 1; }
+  .compile { margin: 0 4px; padding: 14px; border-radius: 10px;
+             background: var(--mauve); color: var(--base); font-weight: 700; }
+  .compile:disabled { opacity: .5; }
+
+  .empty { padding: 25vh 24px; text-align: center; color: var(--o0); line-height: 1.6; }
+  .empty span { display: block; font-size: 34px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <button class="burger" id="burger" aria-label="Projects">&#9776;</button>
+  <span class="title" id="title">LaTeX Workspace</span>
+  <span class="dot" id="dot"></span>
+  <span class="state" id="state"></span>
+</header>
+
+<main id="main">
+  <div class="empty"><span>&#128196;</span>Choose a project</div>
+</main>
+
+<div class="scrim" id="scrim"></div>
+<nav class="drawer" id="drawer">
+  <h2>Projects</h2>
+  <div id="projects"></div>
+  <div class="fill"></div>
+  <button class="compile" id="compile">Compile</button>
+</nav>
+
+<script>
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('lwm.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('lwm.' + k, JSON.stringify(v)); } catch {} },
+};
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+let current = null, projects = [];
+let pages = 0, pdfMtime = 0, logMtime = -1, compileError = null, logData = null;
+let compiling = false, online = true, flashUntil = 0;
+
+/* ---------- drawer ---------- */
+
+function setDrawer(open) {
+  $('drawer').classList.toggle('open', open);
+  $('scrim').classList.toggle('open', open);
+}
+$('burger').addEventListener('click', () => setDrawer(!$('drawer').classList.contains('open')));
+$('scrim').addEventListener('click', () => setDrawer(false));
+
+/* ---------- projects ---------- */
+
+async function refreshProjects() {
+  if (document.hidden) return;  // backgrounded PWAs stay quiet
+  let list;
+  try {
+    list = await (await fetch('/projects')).json();
+  } catch { return; }
+  projects = list;
+  $('projects').innerHTML = list.map(p =>
+    `<button class="proj${p.name === current ? ' active' : ''}" data-name="${esc(p.name)}">` +
+    `<span class="pn">${esc(p.name)}</span></button>`
+  ).join('') || '<div class="empty" style="padding:24px 12px">No projects</div>';
+
+  if (!current) {
+    const remembered = store.get('project', null);
+    const pick = list.find(p => p.name === remembered) || list[0];
+    if (pick) selectProject(pick.name);
+  }
+}
+
+$('projects').addEventListener('click', e => {
+  const btn = e.target.closest('.proj');
+  if (btn) { selectProject(btn.dataset.name); setDrawer(false); }
+});
+
+function selectProject(name) {
+  if (name === current) return;
+  current = name;
+  store.set('project', name);
+  pages = 0; pdfMtime = 0; logMtime = -1; compileError = null; logData = null;
+  $('title').textContent = name;
+  document.title = name + ' · LaTeX';
+  refreshProjects();
+  renderStatus();
+  poll();
+}
+
+/* ---------- status ---------- */
+
+function setDot(cls, text) {
+  $('dot').className = 'dot ' + cls;
+  $('state').textContent = text;
+}
+
+function renderStatus() {
+  if (!online) return setDot('offline', 'offline');
+  if (!current) return setDot('', '');
+  if (compiling) return setDot('compiling', '');
+  if (Date.now() < flashUntil) {
+    setTimeout(renderStatus, flashUntil - Date.now() + 20);
+    return setDot('updated', 'updated');
+  }
+  if (!logData) return setDot('', '');
+  if (logData.compile_error || (logData.exists && !logData.ok)) return setDot('error', 'failed');
+  setDot('ready', '');
+}
+
+/* ---------- compile ---------- */
+
+$('compile').addEventListener('click', compileNow);
+
+async function compileNow() {
+  if (!current) return;
+  compiling = true;
+  renderStatus();
+  setDrawer(false);
+  try { await fetch('/compile/' + encodeURIComponent(current)); } catch {}
+  setTimeout(poll, 800);
+}
+
+/* poll() is defined in the polling section below. */
+refreshProjects();
+setInterval(refreshProjects, 5000);
+</script>
+</body>
+</html>
+"""
+
 
 class Handler(BaseHTTPRequestHandler):
     timeout = 30
@@ -1328,6 +1525,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if p in ("/", "/index.html"):
                 self._send(200, "text/html", INDEX_HTML.encode())
+            elif p == "/m":
+                self._send(200, "text/html", MOBILE_HTML.encode())
             elif p == "/healthz":
                 self._serve_health()
             elif p == "/manifest.webmanifest":
