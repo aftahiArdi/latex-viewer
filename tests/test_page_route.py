@@ -87,6 +87,15 @@ def test_a_new_pdf_mtime_re_renders_and_sweeps_the_old_pages(client, tmp_path, f
     assert len(fresh) == 1, "stale page images were not swept"
 
 
+def test_two_pdfs_in_the_same_second_do_not_share_cached_pages(client, tmp_path, fake_pdftoppm):
+    d = make_project(tmp_path, "doc", pdf=FAKE_PDF, log=LOG_2_PAGES)
+    os.utime(d / "main.pdf", ns=(2_000_000_000_100_000_000, 2_000_000_000_100_000_000))
+    client.get("/page/doc/1.png")
+    os.utime(d / "main.pdf", ns=(2_000_000_000_400_000_000, 2_000_000_000_400_000_000))
+    client.get("/page/doc/1.png")
+    assert len(fake_pdftoppm) == 2, "a recompile within the same second reused stale pages"
+
+
 def test_rejects_a_project_outside_documents(client, tmp_path, no_subprocess):
     make_project(tmp_path, "doc", pdf=FAKE_PDF, log=LOG_2_PAGES)
     assert client.get("/page/..%2F..%2Fetc/1.png").status == 404

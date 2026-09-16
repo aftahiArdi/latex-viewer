@@ -390,17 +390,19 @@ def _page_lock(name: str) -> threading.Lock:
         return _page_locks.setdefault(name, threading.Lock())
 
 
-def _render_page(project_dir: Path, n: int, mtime: float) -> bytes | None:
+def _render_page(project_dir: Path, n: int, mtime_ns: int) -> bytes | None:
     """PNG bytes for page `n`, rasterizing through poppler if not cached.
 
-    Cached under .build/pages/<mtime>-<n>.png. The mtime in the name means a
-    recompile invalidates every page without any explicit invalidation step;
-    pages from older mtimes are swept on the first request after the change.
+    Cached under .build/pages/<mtime_ns>-<n>.png. The nanosecond mtime in the
+    name means a recompile invalidates every page without any explicit
+    invalidation step, and two compiles landing in the same whole second
+    still get distinct cache entries; pages from older mtimes are swept on
+    the first request after the change.
 
     Returns None if poppler is missing or the render fails.
     """
     cache = project_dir / BUILD_DIRNAME / PAGES_DIRNAME
-    stamp = f"{mtime:.0f}"
+    stamp = str(mtime_ns)
     target = cache / f"{stamp}-{n}.png"
 
     # A finished page is published with os.replace(), so a reader sees either
@@ -1515,6 +1517,7 @@ function selectProject(name) {
   store.set('project', name);
   pages = 0; pdfMtime = 0; logMtime = -1; compileError = null; logData = null;
   renderIssues();
+  showPages();
   $('title').textContent = name;
   document.title = name + ' · LaTeX';
   refreshProjects();
@@ -1530,7 +1533,7 @@ function setDot(cls, text) {
 }
 
 function renderStatus() {
-  if (!online) return setDot('offline', 'offline');
+  if (!online) return setDot('offline', "can't reach server");
   if (!current) return setDot('', '');
   if (compiling) return setDot('compiling', '');
   if (Date.now() < flashUntil) {
@@ -1551,7 +1554,7 @@ function showPages() {
     return;
   }
   if (!pdfMtime || !pages) {
-    const why = logData && !logData.ok ? 'the last compile failed' : 'nothing built yet';
+    const why = logData && logData.exists && !logData.ok ? 'the last compile failed' : 'nothing built yet';
     area.innerHTML = '<div class="empty"><span>&#128196;</span>No PDF &mdash; ' + why + '</div>';
     return;
   }
@@ -1629,27 +1632,31 @@ async function poll() {
     if (!first && pdfMtime) flashUntil = Date.now() + 2000;
   }
   if (s.log_mtime !== logMtime || s.compile_error !== compileError) {
-    logMtime = s.log_mtime;
-    compileError = s.compile_error;
-    await loadLog(name);
+    if (await loadLog(name)) {
+      logMtime = s.log_mtime;
+      compileError = s.compile_error;
+    }
   }
   renderStatus();
   schedule();
 }
 
 async function loadLog(name) {
+  let data;
   try {
-    const data = await (await fetch('/log/' + encodeURIComponent(name))).json();
-    if (name !== current) return;
-    logData = data;
-  } catch { return; }
+    data = await (await fetch('/log/' + encodeURIComponent(name))).json();
+  } catch { return false; }
+  if (name !== current) return false;
+  logData = data;
   if (!pdfMtime) showPages();
   renderIssues();
+  return true;
 }
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { clearTimeout(timer); return; }
   failures = 0;
+  if (document.querySelector('.page.failed')) showPages();
   poll();
 });
 
@@ -1664,8 +1671,15 @@ setInterval(refreshProjects, 5000);
   let startY = null, armed = false;
 
   addEventListener('touchstart', e => {
-    // Only arm at the very top, or this fights the normal scroll.
-    startY = (scrollY <= 0 && e.touches.length === 1) ? e.touches[0].clientY : null;
+    // Only arm at the very top, or this fights the normal scroll. Never arm
+    // inside the problems sheet or the project drawer (both their own
+    // scrollers), or while the page is pinch-zoomed.
+    const inOverlay = e.target.closest('#sheet, #drawer')
+      || $('drawer').classList.contains('open')
+      || $('sheet').classList.contains('open');
+    const zoomed = window.visualViewport && visualViewport.scale > 1;
+    startY = (scrollY <= 0 && e.touches.length === 1 && !inOverlay && !zoomed)
+      ? e.touches[0].clientY : null;
     armed = false;
   }, { passive: true });
 
@@ -1865,11 +1879,14 @@ class Handler(BaseHTTPRequestHandler):
         if not 1 <= n <= _page_count(d):
             self.send_error(404)
             return
-        mtime = _mtime(d / "main.pdf")
-        if not mtime:
+        try:
+            mtime_ns = (d / "main.pdf").stat().st_mtime_ns
+        except OSError:
+            mtime_ns = 0
+        if not mtime_ns:
             self.send_error(404)
             return
-        png = _render_page(d, n, mtime)
+        png = _render_page(d, n, mtime_ns)
         if png is None:
             self.send_error(502, "Could not rasterize page")
             return

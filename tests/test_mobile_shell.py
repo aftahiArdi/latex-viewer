@@ -75,6 +75,26 @@ def test_polling_backs_off_on_failure():
     assert "BACKOFF = [2000, 5000, 15000, 30000]" in html
 
 
+def test_pull_to_recompile_ignores_the_sheet_drawer_and_zoom():
+    html = server.MOBILE_HTML
+    ptr = html[html.index("pull to recompile"):]
+    start = ptr[ptr.index("'touchstart'"):]
+    start = start[:start.index("}, { passive: true });")]
+    for guard in ("closest('#sheet, #drawer')", "classList.contains('open')", "visualViewport"):
+        assert guard in start, guard
+
+
+def test_small_state_fixes_are_in_place():
+    html = server.MOBILE_HTML
+    sel = html[html.index("function selectProject("):]
+    sel = sel[:sel.index("\n}\n")]
+    assert "showPages()" in sel                                   # M-7
+    assert "logData.exists && !logData.ok" in html                # M-4
+    assert "can't reach server" in html                           # M-6
+    vis = html[html.index("'visibilitychange'"):]
+    assert ".page.failed" in vis[:vis.index("});")]              # M-1
+
+
 def test_stale_poll_failures_and_restarts_cannot_fork_the_timer():
     html = server.MOBILE_HTML
     catch = html[html.index("async function poll()"):]
