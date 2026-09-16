@@ -1474,6 +1474,7 @@ $('projects').addEventListener('click', e => {
 
 function selectProject(name) {
   if (name === current) return;
+  clearTimeout(timer);
   current = name;
   store.set('project', name);
   pages = 0; pdfMtime = 0; logMtime = -1; compileError = null; logData = null;
@@ -1544,6 +1545,7 @@ $('compile').addEventListener('click', compileNow);
 
 async function compileNow() {
   if (!current) return;
+  clearTimeout(timer);
   compiling = true;
   renderStatus();
   setDrawer(false);
@@ -1570,6 +1572,7 @@ async function poll() {
   try {
     s = await (await fetch('/mtime/' + encodeURIComponent(name))).json();
   } catch {
+    if (name !== current) return;
     failures++;
     online = false;
     renderStatus();

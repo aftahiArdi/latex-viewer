@@ -73,3 +73,14 @@ def test_polling_pauses_when_the_app_is_backgrounded():
 def test_polling_backs_off_on_failure():
     html = server.MOBILE_HTML
     assert "BACKOFF = [2000, 5000, 15000, 30000]" in html
+
+
+def test_stale_poll_failures_and_restarts_cannot_fork_the_timer():
+    html = server.MOBILE_HTML
+    catch = html[html.index("async function poll()"):]
+    catch = catch[catch.index("} catch {"):]
+    assert catch.split("\n")[1].strip() == "if (name !== current) return;"
+    for fn in ("function selectProject(", "async function compileNow("):
+        body = html[html.index(fn):]
+        body = body[:body.index("\n}\n")]
+        assert "clearTimeout(timer)" in body, fn
