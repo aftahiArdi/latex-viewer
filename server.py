@@ -328,6 +328,56 @@ def parse_log(text: str) -> dict:
     }
 
 
+_PDFINFO_PAGES_RE = re.compile(r"^Pages:\s+(\d+)$", re.M)
+PDFINFO_TIMEOUT = 10
+# project path -> (log mtime, pdf mtime, pages)
+_page_counts: dict[str, tuple[float, float, int]] = {}
+
+
+def _page_count(project_dir: Path) -> int:
+    """How many pages main.pdf has, or 0 if that cannot be determined.
+
+    pdflatex records the count in main.log, so the common case costs a file
+    read. A PDF compiled outside this container has no matching log, so fall
+    back to asking poppler.
+
+    Memoized on both mtimes: /mtime/ is polled every 2s per connected client,
+    and re-parsing the whole log on every poll would be wasteful.
+    """
+    key = str(project_dir)
+    log_m = _mtime(project_dir / "main.log")
+    pdf_m = _mtime(project_dir / "main.pdf")
+    cached = _page_counts.get(key)
+    if cached and cached[0] == log_m and cached[1] == pdf_m:
+        return cached[2]
+
+    count = _compute_page_count(project_dir)
+    _page_counts[key] = (log_m, pdf_m, count)
+    return count
+
+
+def _compute_page_count(project_dir: Path) -> int:
+    try:
+        parsed = parse_log((project_dir / "main.log").read_text(errors="replace"))
+    except OSError:
+        parsed = None
+    if parsed and parsed["output"]:
+        return parsed["output"]["pages"]
+
+    pdf = project_dir / "main.pdf"
+    if not pdf.exists():
+        return 0
+    try:
+        out = subprocess.run(
+            ["pdfinfo", str(pdf)],
+            capture_output=True, text=True, timeout=PDFINFO_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    m = _PDFINFO_PAGES_RE.search(out.stdout)
+    return int(m.group(1)) if m else 0
+
+
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1035,6 +1085,7 @@ class Handler(BaseHTTPRequestHandler):
             "log_mtime": _mtime(d / "main.log") if d else 0,
             "compiling": d is not None and d.name in _compiling,
             "compile_error": _compile_errors.get(d.name) if d else None,
+            "pages": _page_count(d) if d else 0,
         })
 
     def _serve_log(self, name: str) -> None:
