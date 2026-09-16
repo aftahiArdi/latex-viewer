@@ -1347,7 +1347,8 @@ MOBILE_HTML = r"""<!DOCTYPE html>
     border-bottom: 1px solid var(--s0);
     display: flex; align-items: center; gap: 10px;
   }
-  .burger { font-size: 20px; line-height: 1; padding: 6px 8px; color: var(--sub); }
+  .burger { font-size: 20px; line-height: 1; padding: 6px 8px; color: var(--sub);
+            min-width: 44px; min-height: 44px; }
   .title { flex: 1; min-width: 0; font-size: 15px; font-weight: 600;
            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--s1); flex-shrink: 0; }
@@ -1387,7 +1388,7 @@ MOBILE_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <button class="burger" id="burger" aria-label="Projects">&#9776;</button>
+  <button class="burger" id="burger" aria-label="Projects" aria-expanded="false">&#9776;</button>
   <span class="title" id="title">LaTeX Workspace</span>
   <span class="dot" id="dot"></span>
   <span class="state" id="state"></span>
@@ -1398,7 +1399,7 @@ MOBILE_HTML = r"""<!DOCTYPE html>
 </main>
 
 <div class="scrim" id="scrim"></div>
-<nav class="drawer" id="drawer">
+<nav class="drawer" id="drawer" aria-label="Projects">
   <h2>Projects</h2>
   <div id="projects"></div>
   <div class="fill"></div>
@@ -1412,7 +1413,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('lwm.' + k, JSON.stringify(v)); } catch {} },
 };
 function esc(s) {
-  return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 let current = null, projects = [];
@@ -1424,9 +1425,11 @@ let compiling = false, online = true, flashUntil = 0;
 function setDrawer(open) {
   $('drawer').classList.toggle('open', open);
   $('scrim').classList.toggle('open', open);
+  $('burger').setAttribute('aria-expanded', open);
 }
 $('burger').addEventListener('click', () => setDrawer(!$('drawer').classList.contains('open')));
 $('scrim').addEventListener('click', () => setDrawer(false));
+addEventListener('keydown', e => { if (e.key === 'Escape') setDrawer(false); });
 
 /* ---------- projects ---------- */
 

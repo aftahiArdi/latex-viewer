@@ -43,3 +43,10 @@ def test_projects_endpoint_still_works_for_the_shell(client, tmp_path):
     make_project(tmp_path, "beta")
     names = [p["name"] for p in client.get("/projects").json()]
     assert names == ["alpha", "beta"]
+
+
+def test_drawer_is_dismissable_and_announced():
+    html = server.MOBILE_HTML
+    assert 'aria-expanded' in html
+    assert "e.key === 'Escape'" in html
+    assert "'&#39;'" in html  # esc() covers single quotes
